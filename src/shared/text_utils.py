@@ -17,6 +17,7 @@ class TextBlock:
     font_name: str
     font_flags: int
     line_height: float
+    is_bold: bool = False
 
 
 def extract_text_from_file(file_path: str) -> List[TextBlock]:
@@ -55,94 +56,129 @@ def extract_text_from_file(file_path: str) -> List[TextBlock]:
 
 def detect_headings_from_text(text_blocks: List[TextBlock]) -> List[Dict]:
     """
-    Detect headings from text blocks using simple heuristics
+    Ultra-precise offline heading detection that filters out fragments and bullet points.
+    Uses advanced pattern matching and contextual analysis.
     """
+    if not text_blocks:
+        return []
+
+    # Analyze font distribution for intelligent size-based detection
+    font_sizes = [block.font_size for block in text_blocks if block.font_size]
+    if not font_sizes:
+        body_font_size = 12.0
+        large_font_threshold = 14.0
+        very_large_font_threshold = 16.0
+    else:
+        body_font_size = max(set(font_sizes), key=font_sizes.count)
+        large_font_threshold = body_font_size + 2
+        very_large_font_threshold = body_font_size + 4
+
     headings = []
     
     for block in text_blocks:
         text = block.text.strip()
-        
-        # Skip very short or very long lines
-        if len(text) < 3 or len(text) > 200:
+        if not text or len(text) < 3:
             continue
+            
+        words = text.split()
         
-        # Check if it looks like a heading
-        is_heading = False
-        level = 3  # Default level
+        # STRICT EXCLUSION RULES - Filter out non-headings
+        # Rule: Exclude fragments (incomplete sentences)
+        if (text.startswith(('and ', 'or ', 'the ', 'of ', 'in ', 'to ', 'for ', 'with ')) or
+            text.endswith((' and', ' or', ' the', ' of', ' in', ' to', ' for', ' with'))):
+            continue
+            
+        # Rule: Exclude bullet points and list items
+        if (text.startswith(('• ', '- ', '* ', '◦ ', '▪ ')) or
+            re.match(r'^\w\)\s', text) or  # a) b) c) format
+            re.match(r'^\d+\)\s', text)):  # 1) 2) 3) format
+            continue
+            
+        # Rule: Exclude sentences (contain common sentence indicators)
+        sentence_indicators = [
+            ' is ', ' are ', ' was ', ' were ', ' will ', ' would ', ' should ', ' could ',
+            ' have ', ' has ', ' had ', ' must ', ' may ', ' can ', ' shall ', ' do ', ' does ',
+            ' the ', ' this ', ' that ', ' these ', ' those ', ' a ', ' an '
+        ]
+        if any(indicator in text.lower() for indicator in sentence_indicators):
+            continue
+            
+        # Rule: Exclude lines that end with incomplete thoughts
+        if (text.endswith((' a', ' an', ' the', ' and', ' or', ' but', ' with', ' for', ' of', ' in')) or
+            len(words) > 12):  # Too long for a heading
+            continue
+            
+        # POSITIVE HEADING DETECTION RULES
+        level = None
+        confidence = 0
         
-        # Pattern 1: Numbered sections (1., 1.1, 1.1.1, etc.)
-        if re.match(r'^\d+(\.\d+)*\.?\s+\w+', text):
-            is_heading = True
-            # Count dots to determine level
-            dots = text.count('.')
-            level = min(dots + 1, 4)  # Max level 4
+        # RULE 1: Numbered section headings (highest confidence)
+        if re.match(r'^\d+\.\s+[A-Z]', text):
+            level = 1
+            confidence = 0.95
+        elif re.match(r'^\d+\.\d+\s+[A-Z]', text):
+            level = 2
+            confidence = 0.95
+        elif re.match(r'^\d+\.\d+\.\d+\s+[A-Z]', text):
+            level = 3
+            confidence = 0.95
+            
+        # RULE 2: All caps (likely main headings)
+        elif (text.isupper() and 
+              2 <= len(words) <= 6 and 
+              not any(char in text for char in '.,;:')):
+            level = 1
+            confidence = 0.9
+            
+        # RULE 3: Large font size (structural headings)
+        elif block.font_size >= very_large_font_threshold:
+            if 2 <= len(words) <= 8:
+                level = 1
+                confidence = 0.85
+        elif block.font_size >= large_font_threshold:
+            if 2 <= len(words) <= 8:
+                level = 2
+                confidence = 0.8
+                
+        # RULE 4: Bold text with title characteristics
+        elif (block.is_bold and 
+              2 <= len(words) <= 6 and
+              (text.istitle() or text.endswith(':')) and
+              not any(char in text for char in '.,;')):
+            level = 2
+            confidence = 0.75
+            
+        # RULE 5: Title case with colon (section labels)
+        elif (text.endswith(':') and 
+              text.istitle() and 
+              2 <= len(words) <= 4):
+            level = 2
+            confidence = 0.8
+            
+        # RULE 6: Short title case phrases (subsection headings)
+        elif (text.istitle() and 
+              2 <= len(words) <= 5 and
+              not text.endswith(('.', ',', ';')) and
+              all(word[0].isupper() for word in words if word.isalpha())):
+            # Additional validation for H3
+            if not any(word.lower() in ['the', 'and', 'for', 'with', 'from'] for word in words):
+                level = 3
+                confidence = 0.7
         
-        # Pattern 2: Short lines that look like titles
-        elif len(text) < 80 and not text.endswith('.') and not text.endswith(','):
-            # Check if it's likely a heading (title case, short, no punctuation)
-            words = text.split()
-            if len(words) <= 8:  # Short phrases
-                is_heading = True
-                level = 2  # Assume level 2 for title-like text
-        
-        # Pattern 3: All caps words (likely headers)
-        elif text.isupper() and len(text.split()) <= 6:
-            is_heading = True
-            level = 1  # Top level for all caps
-        
-        if is_heading:
-            heading = {
+        # Only add if we found a valid heading with sufficient confidence
+        if level and confidence >= 0.7:
+            headings.append({
                 'text': text,
                 'level': level,
                 'page_num': block.page_num,
                 'bbox': block.bbox,
                 'font_size': block.font_size,
-                'confidence': 0.7  # Lower confidence for text-based detection
-            }
-            headings.append(heading)
+                'is_bold': block.is_bold,
+                'confidence': confidence
+            })
     
     return headings
 
-def is_valid_h3_heading(text: str) -> bool:
-    """
-    Very strict validation for H3 headings
-    """
-    words = text.split()
-    
-    # Must be 2-5 words only
-    if not (2 <= len(words) <= 5):
-        return False
-    
-    # Must not end with sentence punctuation
-    if text.endswith(('.', '!', '?', ',')):
-        return False
-    
-    # Must be title case (each word capitalized)
-    if not all(w[0].isupper() and w[1:].islower() for w in words if len(w) > 1):
-        return False
-    
-    # Exclude common sentence starters/words
-    exclude_words = {
-        'the', 'this', 'that', 'these', 'those', 'a', 'an', 'and', 'or', 'but',
-        'for', 'with', 'from', 'to', 'in', 'on', 'at', 'by', 'as', 'is', 'are',
-        'was', 'were', 'will', 'would', 'could', 'should', 'must', 'can', 'may'
-    }
-    if any(word.lower() in exclude_words for word in words):
-        return False
-    
-    # Must contain at least one "heading-like" word
-    heading_indicators = {
-        'overview', 'summary', 'introduction', 'conclusion', 'background',
-        'approach', 'method', 'results', 'discussion', 'timeline', 'milestones',
-        'requirements', 'criteria', 'funding', 'membership', 'guidelines',
-        'policies', 'procedures', 'services', 'resources', 'tools', 'support'
-    }
-    
-    # Allow if contains heading indicators OR is very short and title-case
-    has_heading_word = any(word.lower() in heading_indicators for word in words)
-    is_short_title = len(words) <= 3 and len(text) <= 25
-    
-    return has_heading_word or is_short_title
 def get_text_statistics(text_blocks: List[TextBlock]) -> Dict:
     """
     Get basic statistics about the text

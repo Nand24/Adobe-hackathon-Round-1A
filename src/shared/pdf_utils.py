@@ -42,35 +42,52 @@ def extract_document_content(file_path: str) -> Dict:
 
 def extract_pdf_content(file_path: str) -> Dict:
     """
-    Extract content from PDF file using PyMuPDF
+    Extract rich content from a PDF file using PyMuPDF, including text,
+    font size, font weight, and layout information.
     """
-    ## added pdf extraction logic
     if not PYMUPDF_AVAILABLE:
         raise ImportError("PyMuPDF not available")
     
-    import fitz  # PyMuPDF
     doc = fitz.open(file_path)
     text_blocks = []
+    
     for page_num in range(len(doc)):
         page = doc.load_page(page_num)
-        blocks = page.get_text("blocks")
-        for b in blocks:
-            x0, y0, x1, y1, text, block_no, block_type = b[:7]
-            cleaned_text = clean_text(text)  # <--- Clean the text here
-            if cleaned_text:
-                text_block = TextBlock(
-                    text=cleaned_text,
-                    page_num=page_num + 1,
-                    bbox=(x0, y0, x1, y1),
-                    font_size=12.0,
-                    font_name="Unknown",
-                    font_flags=0,
-                    line_height=14.0
-                )
-                text_blocks.append(text_block)
-    from shared.text_utils import detect_headings_from_text, get_text_statistics
-    headings = detect_headings_from_text(text_blocks)
+        
+        # Extract blocks with detailed information
+        blocks = page.get_text("dict", flags=fitz.TEXTFLAGS_DICT & ~fitz.TEXT_PRESERVE_LIGATURES & ~fitz.TEXT_PRESERVE_IMAGES)["blocks"]
+        
+        for block in blocks:
+            if block['type'] == 0:  # It's a text block
+                for line in block['lines']:
+                    for span in line['spans']:
+                        text = clean_text(span['text'])
+                        if text:
+                            # Enhanced bold detection
+                            font_name = span['font'].lower()
+                            is_bold = ("bold" in font_name or 
+                                     "black" in font_name or 
+                                     span['flags'] & 2**4 or  # Bold flag
+                                     span['flags'] & 16)      # Bold flag alternative
+                            
+                            text_block = TextBlock(
+                                text=text,
+                                page_num=page_num + 1,
+                                bbox=span['bbox'],
+                                font_size=round(span['size']),
+                                font_name=span['font'],
+                                font_flags=span['flags'],
+                                line_height=line['bbox'][3] - line['bbox'][1],
+                                is_bold=is_bold
+                            )
+                            text_blocks.append(text_block)
+                            
+    doc.close()
+    
+    # This part can be simplified as heading detection will be more sophisticated
+    headings = [] 
     statistics = get_text_statistics(text_blocks)
+    
     return {
         'text_blocks': text_blocks,
         'headings': headings,
@@ -79,67 +96,75 @@ def extract_pdf_content(file_path: str) -> Dict:
 
 
 def clean_text(text: str) -> str:
-    """Clean and normalize text"""
+    """
+    Clean and normalize a text string.
+    """
     if not text:
         return ""
-    
-    # Remove extra whitespace
-    text = ' '.join(text.split())
-    
-    # Remove special characters but keep basic punctuation
-    text = re.sub(r'[^\w\s\.\,\!\?\-\:\;\(\)]', ' ', text)
-    
-    # Remove extra spaces
+    # Replace multiple spaces with a single space
     text = re.sub(r'\s+', ' ', text)
-    
+    # Remove non-printable characters
+    text = ''.join(char for char in text if char.isprintable())
     return text.strip()
 
 
+def get_text_statistics(text_blocks: List[TextBlock]) -> Dict:
+    """
+    Calculate statistics about the text blocks.
+    """
+    if not text_blocks:
+        return {
+            'total_blocks': 0,
+            'avg_font_size': 12.0,
+            'font_sizes': [12.0]
+        }
+    
+    font_sizes = [block.font_size for block in text_blocks if block.font_size]
+    if not font_sizes:
+        return {
+            'total_blocks': len(text_blocks),
+            'avg_font_size': 12.0,
+            'font_sizes': [12.0]
+        }
+
+    return {
+        'total_blocks': len(text_blocks),
+        'avg_font_size': statistics.mean(font_sizes),
+        'font_sizes': font_sizes
+    }
+
+
 def is_likely_heading(text: str) -> bool:
-    """Check if text looks like a heading"""
+    """
+    Check if a given text string is likely to be a heading.
+    """
     if not text or len(text.strip()) < 3:
         return False
     
     text = text.strip()
     
-    # Check for common heading patterns
-    heading_patterns = [
-        r'^\d+\.',  # Numbered sections
-        r'^[A-Z][a-z]+(\s+[A-Z][a-z]+)*$',  # Title case
-        r'^[A-Z\s]+$',  # All caps
-        r'^\w+:',  # Colon-terminated
-    ]
-    
-    for pattern in heading_patterns:
-        if re.match(pattern, text):
-            return True
-    
-    # Check length (headings are usually shorter)
-    if len(text) < 80 and not text.endswith('.'):
+    # Rule 1: Ends with punctuation (less likely to be a heading)
+    if text.endswith(('.', ',', ';', ':')):
+        return False
+        
+    # Rule 2: Starts with a lowercase letter (less likely)
+    if text[0].islower():
+        return False
+        
+    # Rule 3: Short and title-cased
+    words = text.split()
+    if len(words) < 8 and text.istitle():
         return True
-    
+        
+    # Rule 4: All caps
+    if text.isupper() and len(words) < 8:
+        return True
+        
+    # Rule 5: Starts with a number (e.g., "1. Introduction")
+    if text[0].isdigit() and '.' in text:
+        return True
+        
     return False
-
-
-def get_text_statistics(text_blocks: List[TextBlock]) -> Dict:
-    """Get statistics about text blocks"""
-    if not text_blocks:
-        return {
-            'total_blocks': 0,
-            'avg_font_size': 12.0,
-            'font_sizes': [12.0],
-            'page_count': 0
-        }
-    
-    font_sizes = [block.font_size for block in text_blocks]
-    pages = set(block.page_num for block in text_blocks)
-    
-    return {
-        'total_blocks': len(text_blocks),
-        'avg_font_size': sum(font_sizes) / len(font_sizes),
-        'font_sizes': font_sizes,
-        'page_count': len(pages)
-    }
 
 
 class PDFUtils:

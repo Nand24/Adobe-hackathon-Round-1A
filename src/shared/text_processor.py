@@ -36,8 +36,55 @@ except ImportError:
 class TextProcessor:
     """Utility class for text processing and NLP tasks with ML enhancement"""
     
+    # def __init__(self):
+    #     """Initialize with ML models if available"""
+    #     self.nlp = None
+    #     self.classifier = None
+    #     self.sentence_model = None
+        
+    #     # Initialize spaCy
+    #     if SPACY_AVAILABLE:
+    #         try:
+    #             self.nlp = spacy.load("en_core_web_sm")
+    #         except OSError:
+    #             try:
+    #                 self.nlp = spacy.load("en_core_web_md")
+    #             except OSError:
+    #                 print("Warning: spaCy model not found. Using basic text processing.")
+        
+    #     # Initialize transformers classifier for heading detection
+    #     if TRANSFORMERS_AVAILABLE:
+    #         try:
+    #             self.classifier = pipeline("text-classification", 
+    #                                      model="distilbert-base-uncased-finetuned-sst-2-english",
+    #                                      return_all_scores=True)
+    #         except Exception as e:
+    #             print(f"Warning: Could not load transformer classifier: {e}")
+        
+    #     # Initialize sentence transformer for semantic similarity
+    #     if SENTENCE_TRANSFORMERS_AVAILABLE:
+    #         try:
+    #             self.sentence_model = SentenceTransformer('all-MiniLM-L6-v2')
+    #         except Exception as e:
+    #             print(f"Warning: Could not load sentence transformer: {e}")
+    #             self.nlp = None
+    _instance = None
+    _initialized = False
+    
+    def __new__(cls):
+        """Singleton pattern to prevent multiple model loading"""
+        if cls._instance is None:
+            cls._instance = super(TextProcessor, cls).__new__(cls)
+        return cls._instance
+    
     def __init__(self):
-        """Initialize with ML models if available"""
+        """Initialize with ML models if available - only once"""
+        if TextProcessor._initialized:
+            return
+            
+        print("Initializing TextProcessor with ML models...")
+        TextProcessor._initialized = True
+        
         self.nlp = None
         self.classifier = None
         self.sentence_model = None
@@ -45,30 +92,37 @@ class TextProcessor:
         # Initialize spaCy
         if SPACY_AVAILABLE:
             try:
+                print("Loading spaCy model...")
                 self.nlp = spacy.load("en_core_web_sm")
+                print("✓ spaCy model loaded")
             except OSError:
                 try:
                     self.nlp = spacy.load("en_core_web_md")
+                    print("✓ spaCy model loaded (md)")
                 except OSError:
                     print("Warning: spaCy model not found. Using basic text processing.")
         
         # Initialize transformers classifier for heading detection
         if TRANSFORMERS_AVAILABLE:
             try:
+                print("Loading transformer model...")
                 self.classifier = pipeline("text-classification", 
                                          model="distilbert-base-uncased-finetuned-sst-2-english",
-                                         return_all_scores=True)
+                                         top_k=None)  # Fix the deprecated warning
+                print("✓ Transformer model loaded")
             except Exception as e:
                 print(f"Warning: Could not load transformer classifier: {e}")
         
         # Initialize sentence transformer for semantic similarity
         if SENTENCE_TRANSFORMERS_AVAILABLE:
             try:
+                print("Loading sentence transformer...")
                 self.sentence_model = SentenceTransformer('all-MiniLM-L6-v2')
+                print("✓ Sentence transformer loaded")
             except Exception as e:
                 print(f"Warning: Could not load sentence transformer: {e}")
-                self.nlp = None
-    
+                
+        print("TextProcessor initialization complete")
     def clean_text(self, text: str) -> str:
         """Clean and normalize text"""
         if not text:
@@ -203,43 +257,107 @@ class TextProcessor:
         
         return len(intersection) / len(union) if union else 0.0
     
+    # def is_heading_ml(self, text: str) -> tuple[bool, float]:
+    #     """Use ML to detect if text is a heading with improved filtering"""
+    #     if not text:
+    #         return False, 0.0
+        
+    #     text = text.strip()
+        
+    #     # Quick exclude: obvious non-headings
+    #     exclude_patterns = [
+    #         r'^-\s',  # Bullet points
+    #         r'^\*\s',  # Asterisk bullets  
+    #         r'^\•\s',  # Bullet symbols
+    #         r'\.$',   # Ends with period
+    #         r'^[a-z]',  # Starts lowercase
+    #     ]
+        
+    #     for pattern in exclude_patterns:
+    #         if re.search(pattern, text):
+    #             return False, 0.0
+        
+    #     # Try transformer-based classification
+    #     if self.classifier:
+    #         try:
+    #             # Use the classifier to assess "importance" of the text
+    #             # Higher confidence in positive sentiment often correlates with headings
+    #             result = self.classifier(text)
+    #             if result and len(result) > 0:
+    #                 # Get the confidence score for the positive class
+    #                 confidence = max(score['score'] for score in result[0])
+    #                 is_heading = confidence > 0.75  # Higher threshold for better precision
+    #                 return is_heading, confidence
+    #         except Exception as e:
+    #             print(f"Warning: ML heading detection failed: {e}")
+        
+    #     # Fallback to rule-based detection
+    #     return self._is_heading_rule_based(text)
     def is_heading_ml(self, text: str) -> tuple[bool, float]:
-        """Use ML to detect if text is a heading with improved filtering"""
+        """Robust offline heading detection with improved H3 filtering"""
         if not text:
             return False, 0.0
         
         text = text.strip()
         
-        # Quick exclude: obvious non-headings
+        # STRICT exclusion patterns for non-headings
         exclude_patterns = [
-            r'^-\s',  # Bullet points
-            r'^\*\s',  # Asterisk bullets  
-            r'^\•\s',  # Bullet symbols
-            r'\.$',   # Ends with period
-            r'^[a-z]',  # Starts lowercase
+            r'^-\s', r'^\*\s', r'^\•\s', r'^\d+\)\s',  # Bullet points
+            r'^[a-z]',  # Starts with lowercase
+            r'\.$', r'[,;]$',  # Ends with punctuation
+            r'^\s*$',  # Empty or whitespace only
+            r'^The\s+', r'^This\s+', r'^It\s+', r'^In\s+',  # Sentence starters
+            r'\s+is\s+', r'\s+are\s+', r'\s+was\s+', r'\s+were\s+',  # Contains verbs
+            r'will\s+(increase|decrease)', r'funding\s+will',  # Long descriptive phrases
         ]
         
         for pattern in exclude_patterns:
-            if re.search(pattern, text):
+            if re.search(pattern, text, re.IGNORECASE):
                 return False, 0.0
         
-        # Try transformer-based classification
-        if self.classifier:
-            try:
-                # Use the classifier to assess "importance" of the text
-                # Higher confidence in positive sentiment often correlates with headings
-                result = self.classifier(text)
-                if result and len(result) > 0:
-                    # Get the confidence score for the positive class
-                    confidence = max(score['score'] for score in result[0])
-                    is_heading = confidence > 0.75  # Higher threshold for better precision
-                    return is_heading, confidence
-            except Exception as e:
-                print(f"Warning: ML heading detection failed: {e}")
+        # Length-based exclusion (too long = likely sentence)
+        if len(text) > 100:
+            return False, 0.0
         
-        # Fallback to rule-based detection
-        return self._is_heading_rule_based(text)
-    
+        # Word count exclusion (too many words = likely sentence)
+        word_count = len(text.split())
+        if word_count > 10:
+            return False, 0.0
+        
+        # STRONG heading patterns (high confidence)
+        strong_patterns = [
+            (r'^\d+\.\s*[A-Z][a-z]+$', 0.95),  # "1. Preamble" (single word after number)
+            (r'^\d+\.\s*[A-Z][a-z]+\s+[A-Z][a-z]+$', 0.95),  # "1. Terms Reference" (two words)
+            (r'^(Chapter|Section|Part|Appendix)\s+\d+', 0.95),  # "Chapter 1"
+            (r'^(Summary|Background|Introduction|Conclusion|Abstract|Overview|Methodology|Results|Discussion|Milestones)$', 0.9),
+        ]
+        
+        for pattern, confidence in strong_patterns:
+            if re.match(pattern, text, re.IGNORECASE):
+                return True, confidence
+        
+        # MEDIUM heading patterns (medium confidence)
+        medium_patterns = [
+            (r'^\d+\.\d+\s*[A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,2}$', 0.8),  # "1.1 Overview" (max 3 words)
+            (r'^[A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,3}$', 0.7),  # "Title Case Words" (2-4 words)
+            (r'^[A-Z\s]{5,30}$', 0.6),  # ALL CAPS (5-30 chars)
+        ]
+        
+        for pattern, confidence in medium_patterns:
+            if re.match(pattern, text, re.IGNORECASE):
+                return True, confidence
+        
+        # WEAK heading patterns (low confidence, strict filtering)
+        if word_count <= 5 and not text.endswith(('.', '!', '?')):
+            # Title case check
+            words = text.split()
+            if all(w[0].isupper() and len(w) > 1 for w in words if w.isalpha()):
+                # No common sentence words
+                sentence_words = {'the', 'and', 'for', 'with', 'from', 'that', 'this', 'will', 'would', 'could', 'should', 'must'}
+                if not any(w.lower() in sentence_words for w in words):
+                    return True, 0.6
+        
+        return False, 0.0
     def _is_heading_rule_based(self, text: str) -> tuple[bool, float]:
         """Rule-based heading detection with confidence score - improved accuracy"""
         if not text or len(text.strip()) < 3:

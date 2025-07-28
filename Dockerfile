@@ -32,5 +32,5 @@ RUN mkdir -p /app/input /app/output
 ENV PYTHONPATH=/app
 ENV PYTHONUNBUFFERED=1
 
-# Default command - Adobe will specify round when running
-CMD ["python", "src/main.py", "--input", "/app/input", "--output", "/app/output"]
+# Default command - automatically runs Round 1A for Adobe evaluation
+CMD ["python", "src/main.py", "--round", "1a", "--input", "/app/input", "--output", "/app/output"]
