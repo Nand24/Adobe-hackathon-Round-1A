@@ -16,14 +16,8 @@ COPY requirements.txt .
 # Install Python dependencies
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Download spaCy model
-RUN python -m spacy download en_core_web_sm
-
 # Copy source code
 COPY src/ ./src/
-
-# Create models directory for ML model cache
-RUN mkdir -p ./models
 
 # Create input and output directories
 RUN mkdir -p /app/input /app/output
